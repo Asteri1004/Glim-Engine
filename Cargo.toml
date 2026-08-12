@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/glim", "crates/glim-app"]
+
+[workspace.dependencies]
+winit = "0.30"
+wgpu = "29"
+pollster = "0.4"
+env_logger = "0.11"
+log = "0.4"
+
+# 디버그 빌드에서도 의존성은 최적화해서 컴파일.
+# wgpu와 naga(셰이더 컴파일러)는 디버그 빌드가 심각하게 느려서 이게 없으면
+# 실행 속도가 체감될 정도로 답답해져. 내 코드는 그대로 디버그로 남음.
+[profile.dev.package."*"]
+opt-level = 3

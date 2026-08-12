@@ -1,0 +1,10 @@
+[package]
+name = "glim-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+env_logger.workspace = true
+glim = { version = "0.1.0", path = "../glim" }
+pollster.workspace = true
+winit.workspace = true

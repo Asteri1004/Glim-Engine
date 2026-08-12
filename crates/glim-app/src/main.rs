@@ -40,15 +40,11 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-
             WindowEvent::Resized(new_size) => renderer.resize(new_size),
-
             WindowEvent::RedrawRequested => {
-                // 서피스 오류 처리는 Renderer 내부 책임이 됐으므로 여기선 호출만 한다.
                 renderer.render();
                 window.request_redraw();
             }
-
             _ => {}
         }
     }

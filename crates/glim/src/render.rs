@@ -8,6 +8,7 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    pipeline: wgpu::RenderPipeline,
     pub size: PhysicalSize<u32>,
 }
 
@@ -15,8 +16,6 @@ impl Renderer {
     pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
 
-        // InstanceDescriptor는 Default를 구현하지 않으므로
-        // new_without_display_handle()을 베이스로 삼는다.
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -35,7 +34,6 @@ impl Renderer {
 
         log::info!("선택된 어댑터: {:?}", adapter.get_info());
 
-        // ..Default::default()가 experimental_features, memory_hints, trace를 채운다.
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("glim device"),
@@ -66,7 +64,50 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        Self { surface, device, queue, config, size }
+        // ── 셰이더 컴파일 ───────────────────────────────
+        // include_wgsl!은 파일을 컴파일 타임에 문자열로 박아넣는다.
+        // 경로는 이 소스 파일 기준 상대 경로.
+        // WGSL 문법 오류가 있으면 여기서 패닉이 난다.
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+        // ── 렌더 파이프라인 ────────────────────────────
+        // OpenGL과 가장 다른 지점. 셰이더, 블렌딩, 래스터화 설정을
+        // 미리 하나의 불변 객체로 굳혀둔다. 그릴 때는 바인딩만 한다.
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("triangle pipeline"),
+            // None이면 셰이더를 분석해 레이아웃을 자동 추론한다.
+            // 유니폼/텍스처가 없는 지금은 이걸로 충분.
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                // 정점 버퍼를 안 쓰므로 빈 배열.
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    // 서피스와 같은 포맷이어야 한다. 다르면 검증 오류.
+                    format: config.format,
+                    // 2D는 알파 블렌딩이 기본. 지금은 불투명이라 티가 안 나지만
+                    // 스프라이트 단계에서 바로 쓰인다.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            // 삼각형 리스트, 백페이스 컬링 없음 등 기본값.
+            // 2D에서는 컬링이 오히려 방해가 되므로 default가 적절하다.
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self { surface, device, queue, config, pipeline, size }
     }
 
     pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
@@ -79,27 +120,18 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
-    /// Result를 반환하지 않고 내부에서 서피스 상태를 직접 처리한다.
     pub fn render(&mut self) {
         let frame = match self.surface.get_current_texture() {
-            // 정상. 바로 사용.
             CurrentSurfaceTexture::Success(frame) => frame,
-
-            // 쓸 수는 있지만 서피스 속성과 어긋남. 재설정 예약 후 이번 프레임은 그대로 사용.
             CurrentSurfaceTexture::Suboptimal(frame) => {
                 self.surface.configure(&self.device, &self.config);
                 frame
             }
-
-            // 서피스가 낡거나 유실됨. 재설정하고 이번 프레임은 건너뜀.
             CurrentSurfaceTexture::Outdated | CurrentSurfaceTexture::Lost => {
                 self.surface.configure(&self.device, &self.config);
                 return;
             }
-
-            // 최소화·가림·타임아웃. 재설정 없이 건너뛰기만 하면 됨.
             CurrentSurfaceTexture::Timeout | CurrentSurfaceTexture::Occluded => return,
-
             CurrentSurfaceTexture::Validation => {
                 log::error!("서피스 획득 중 검증 오류");
                 return;
@@ -115,8 +147,8 @@ impl Renderer {
             });
 
         {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear pass"),
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("main pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     depth_slice: None,
@@ -131,9 +163,13 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                // multiview_mask 등 나머지는 Default가 채운다.
                 ..Default::default()
             });
+
+            pass.set_pipeline(&self.pipeline);
+            // 정점 0..3을 인스턴스 0..1로 한 번 그린다.
+            // 이 3이 셰이더의 vertex_index로 들어간다.
+            pass.draw(0..3, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
